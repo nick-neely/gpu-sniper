@@ -4,6 +4,8 @@
 
 GPU Sniper is a lightweight, high-speed Go script designed to automatically monitor Amazon's website for GPU availability. Originally conceived as a minimal personal-use tool, it checks for a specific GPU model, logs stock status, and lays the groundwork for future extensions.
 
+![image](https://github.com/user-attachments/assets/7fee5f44-c1c8-44c2-a08b-18bfcd2b66cd)
+
 ## Purpose
 
 Due to persistent GPU shortages and rapid price fluctuations, manual monitoring is inefficient. GPU Sniper automates the process, increasing your chance to secure a highly desired GPU, currently focusing on Amazon as the target retailer.
