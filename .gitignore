@@ -1,0 +1,26 @@
+# Binaries for programs and plugins
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories (remove if using Go modules with vendoring)
+/vendor/
+
+# Build output directory
+/bin/
+/dist/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
