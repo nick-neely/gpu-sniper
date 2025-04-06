@@ -9,10 +9,10 @@ import (
 // Application constants
 const (
 	// Set the product identifier here (e.g., "B0DVCH9WJH" or "B084BGC5LR")
-	ProductID           = "B0DVCH9WJH"
+	ProductID           = "B084BGC5LR"
 	RetailerURL         = "https://www.amazon.com/gp/product/" + ProductID + "/"
 	TargetGPU           = "NVIDIA RTX 5090" // For display purposes; can be updated or removed as needed
-	DefaultPollingInterval = 1 * time.Minute
+	DefaultPollingInterval = 30 * time.Second
 	ProgressWidth       = 40 // Width of the progress bar
 )
 
@@ -65,5 +65,12 @@ var (
 		InitialBackoff: 300 * time.Millisecond,
 		MaxBackoff:     2 * time.Second,
 		BackoffFactor:  1.5,
+	}
+
+	CaptchaRetryConfig = RetryConfig{
+		MaxRetries:     1,  // Don't retry immediately
+		InitialBackoff: 5 * time.Minute,
+		MaxBackoff:     30 * time.Minute,
+		BackoffFactor:  2.0,
 	}
 )

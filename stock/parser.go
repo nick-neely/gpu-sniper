@@ -1,9 +1,12 @@
 package stock
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,15 +21,60 @@ import (
 // Global variable to track the current progress tracker
 var CurrentProgressTracker *ui.ProgressTracker
 
+// Custom error type for CAPTCHA detection
+var ErrCaptchaDetected = fmt.Errorf("CAPTCHA challenge detected")
+
 // ParseStockStatus parses an HTTP response to check if the product is in stock
 func ParseStockStatus(resp *http.Response) (bool, error) {
-	// Parse directly from response body
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if (err != nil) {
-		return false, fmt.Errorf("error parsing HTML: %w", err)
-	}
-	inStock := doc.Find("#add-to-cart-button").Length() > 0
-	return inStock, nil
+    // Parse directly from response body
+    doc, err := goquery.NewDocumentFromReader(resp.Body)
+    if (err != nil) {
+        return false, fmt.Errorf("error parsing HTML: %w", err)
+    }
+    
+    // Primary check - exact ID match
+    addToCartButton := doc.Find("#add-to-cart-button")
+    if addToCartButton.Length() > 0 {
+        // Check if button is not disabled (some sites have disabled buttons when out of stock)
+        _, disabled := addToCartButton.Attr("disabled")
+        if !disabled {
+            ui.LogInfo("Found enabled add-to-cart button with ID 'add-to-cart-button'")
+            return true, nil
+        } else {
+            ui.LogInfo("Add-to-cart button found but is disabled")
+        }
+    }
+    
+    // Fallback checks for other common patterns
+    selectors := []string{
+        "[id*=add-to-cart]", 
+        "[class*=add-to-cart]",
+        "[id*=addToCart]",
+        "[class*=addToCart]",
+        ".btn-add-to-cart:not([disabled])",
+        "button:contains('Add to Cart')",
+        "input[type=submit][value*='Add to Cart']",
+    }
+    
+    for _, selector := range selectors {
+        elements := doc.Find(selector)
+        if elements.Length() > 0 {
+            ui.LogInfo("Found alternative add-to-cart element with selector: %s", selector)
+            return true, nil
+        }
+    }
+    
+    // Additional check for "Out of Stock" text which indicates item exists but is unavailable
+    outOfStockTexts := []string{"Out of Stock", "Sold Out", "Currently unavailable", "Temporarily out of stock"}
+    for _, text := range outOfStockTexts {
+        if doc.Find(fmt.Sprintf("*:contains('%s')", text)).Length() > 0 {
+            ui.LogInfo("Page contains '%s' text, confirming item exists but is out of stock", text)
+            return false, nil
+        }
+    }
+    
+    ui.LogInfo("No add-to-cart indicators found on the page")
+    return false, nil
 }
 
 func AdjustPollingByTimeOfDay() time.Duration {
@@ -86,6 +134,7 @@ func CheckStock() bool {
 	fmt.Println(strings.Repeat("─", 50))
 
 	var inStock bool
+	var captchaDetected bool
 
 	operation := func() error {
 		// Create and send HTTP request
@@ -99,6 +148,28 @@ func CheckStock() bool {
 		if err != nil {
 			return fmt.Errorf("network error: failed to fetch page. Please check your internet connection: %w", err)
 		}
+
+		if isCaptchaPage(resp) {
+            ui.LogWarning("CAPTCHA detected - increasing delay and implementing cooling period")
+            
+            // Apply exponential backoff to polling interval
+            newInterval := config.PollingInterval * 3
+            if newInterval > 15*time.Minute {
+                newInterval = 15*time.Minute
+            }
+            UpdatePollingInterval(newInterval)
+            
+            // Update progress tracker
+            if CurrentProgressTracker != nil {
+                CurrentProgressTracker.UpdateStatus("Cooling Down - CAPTCHA detected")
+            }
+            
+            captchaDetected = true
+            return ErrCaptchaDetected
+        }
+
+		DebugSaveHTML(resp)
+
 		defer resp.Body.Close()
 
 		// Updated error messages for HTTP failures
@@ -147,11 +218,23 @@ func CheckStock() bool {
 		return nil
 	}
 	
-	// Execute with retry logic
-	err := utils.RetryOperation(operation, config.StockCheckRetryConfig)
+	var err error
+	// Choose the appropriate retry configuration based on the situation
+	if captchaDetected {
+		// Use CaptchaRetryConfig for CAPTCHA-related retries
+		err = utils.RetryOperation(operation, config.CaptchaRetryConfig)
+	} else {
+		// Use StockCheckRetryConfig for normal stock checks
+		err = utils.RetryOperation(operation, config.StockCheckRetryConfig)
+	}
 	
 	fmt.Println(strings.Repeat("─", 50))
 	
+	if err == ErrCaptchaDetected {
+		ui.LogWarning("CAPTCHA detected, cooling down for an extended period")
+		return false
+	}
+
 	if err != nil {
 		ui.LogError("Stock check failed after retries: %v", err)
 		return false
@@ -169,4 +252,50 @@ func CheckStock() bool {
 		config.ErrorColor.Printf("✗ %s is not in stock\n", config.TargetGPU)
 		return false
 	}
+}
+
+func DebugSaveHTML(resp *http.Response) error {
+    // Clone the body since reading it consumes it
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return err
+    }
+    
+    // Restore the body for other functions
+    resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+    
+    // Save HTML to file
+    filename := fmt.Sprintf("debug_%s.html", time.Now().Format("20060102_150405"))
+    err = os.WriteFile(filename, bodyBytes, 0644)
+    if err != nil {
+        return err
+    }
+    
+    ui.LogInfo("Saved HTML content to %s for debugging", filename)
+    return nil
+}
+
+func isCaptchaPage(resp *http.Response) bool {
+    bodyBytes, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return false
+    }
+    
+    // Restore the body for other operations
+    resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+    
+    // Check for CAPTCHA indicators in the response body
+    bodyStr := string(bodyBytes)
+    captchaIndicators := []string{
+        "captcha", "robot", "characters you see", "verify human", 
+        "Enter the characters", "validateCaptcha",
+    }
+    
+    for _, indicator := range captchaIndicators {
+        if strings.Contains(strings.ToLower(bodyStr), strings.ToLower(indicator)) {
+            return true
+        }
+    }
+    
+    return false
 }
